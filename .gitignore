@@ -2,3 +2,4 @@
 /__pycache__/**
 environment_vars/*
 logging/*
+db/*
