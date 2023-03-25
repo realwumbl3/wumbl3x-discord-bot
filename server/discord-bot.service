@@ -1,0 +1,12 @@
+[Unit]
+Description=Discord Bot
+After=network.target
+
+[Service]
+User=wumbl3vps
+Group=www-data
+WorkingDirectory=/home/wumbl3vps/Dev-23/discord-bot/
+ExecStart=/home/wumbl3vps/Dev-23/discord-bot/server/start.sh
+
+[Install]
+WantedBy=multi-user.target

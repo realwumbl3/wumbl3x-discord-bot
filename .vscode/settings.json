@@ -1,0 +1,16 @@
+{
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "database": "${workspaceFolder:discord-bot}/likes.db",
+            "name": "discord-bot/likes.db"
+        },
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "database": "${workspaceFolder:discord-bot}/visits.db",
+            "name": "discord-bot/visits.db"
+        }
+    ]
+}
