@@ -3,3 +3,5 @@
 environment_vars/*
 logging/*
 db/*
+hotConfig.json
+.vscode/

@@ -101,7 +101,7 @@ join_leave_bot = JoinLeaveBot(
 ############################################# TWITTER LIKES #############################################
 
 
-from modules.twitter_webhook import app, add_like_by_id
+from modules.twitter_webhook import app, add_like_by_stweet
 
 
 @command_client.command()
@@ -118,7 +118,7 @@ async def add_like(ctx, msg_content=None):
         logging.info(f"Removing message: id[{message_id}]")
         await ctx.message.delete()
         return
-    add_like_by_id(tweet_id)
+    add_like_by_stweet(tweet_id)
     logging.info(f"Adding like: id[{message_id}] tweet_id[{tweet_id}] content[{msg_content}]")
 
 

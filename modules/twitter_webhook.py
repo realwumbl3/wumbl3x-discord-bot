@@ -9,17 +9,30 @@ from time import sleep
 import base64
 import hashlib
 import hmac
+from re import search
 import os
 import json
 from itertools import cycle
 from collections import deque
 
+from zyxPy.json.FastJsonStore import FastJsonStore
+
+HOT_CONFIG = FastJsonStore("hotConfig.json")
+
+
+from pyTwitterAccount.v1_4 import STweet, pyTwiAccount, TweetParse
+
+APP_DATA = "/home/wumbl3vps/Data-23/alphaDek/TweetFeed"
+
+ACCOUNTS_ROOT = f"{APP_DATA}/accounts"
+STWEET_DB_FILE = f"{APP_DATA}/sTweet-8.db"
+TWEET_CREDS = f"{APP_DATA}/twitterAPICredentials.json"
+
+pyTwiAccount.set_root(ACCOUNTS_ROOT)
+wumbl3_account = pyTwiAccount.TwitterAccount(handle="wumbl3")
+STWEET = STweet.STweet(accounts_root=ACCOUNTS_ROOT, stweet_db_file=STWEET_DB_FILE)
 
 import asyncio
-
-from pyTwitterAccount.v1_3.pyTwiAccount import TwitterAccount, set_root, init_main_api
-
-from pyTwitterAccount.v1_3.TweetParse import TweetParse
 
 from zyXserve.globe import discord_client as d_client, app
 
@@ -32,13 +45,6 @@ from discord import Client as DiscordClient, Embed as DiscordEmbed, Object as Di
 discord_client = d_client  # type: DiscordClient
 
 from zyXserve.v1_3.Sqlite import SqliteDatabase, orm, sql
-
-APP_DATA = "/home/wumbl3vps/Data-23/alphaDek/TweetFeed"
-ACCOUNTS_ROOT = f"{APP_DATA}/accounts/"
-set_root(ACCOUNTS_ROOT)
-MAIN_API = init_main_api(f"{APP_DATA}/twitterAPICredentials.json")
-wumbl3_account = TwitterAccount(handle="wumbl3")
-wumbl3_api_v1 = wumbl3_account.instanceAPI()
 
 likes_database = SqliteDatabase({"db_path": f"db/likes.db", "overwrite": False})
 
@@ -55,7 +61,6 @@ class Like(likes_database.base):
 
 likes_database.create_all()
 
-TWEET_STILL_LIKED_CHECK_DELAY = 60
 VERBOSE = False
 
 COLOR_NEXT = cycle(["F51CFF", "1CFCFF", "FCFF25"]).__next__
@@ -72,24 +77,27 @@ def await_in_another_thread(coroutine):
         logging.exception(e)
 
 
-@app.route("/webhooks/twitter", methods=["POST"])
-def twitter_activity_webhook():
-    request_json = request.get_json()
-    if "favorite_events" in request_json:
-        tweet_json = request_json["favorite_events"][0]["favorited_status"]
-    else:
-        return make_response("thanks 😎", 200)
-    if "extended_tweet" in tweet_json:
-        tweet_json.update(tweet_json["extended_tweet"])
-    await_in_another_thread(discord_webhook(tweet_json))
-    VERBOSE and logging.info("Returning 200 to twitter.")
-    return make_response("thanks 😎", 200)
+# @app.route("/webhooks/twitter", methods=["POST"])
+# def twitter_activity_webhook():
+#     logging.info("Twitter webhook called.")
+#     request_json = request.get_json()
+#     if "favorite_events" in request_json:
+#         tweet_json = request_json["favorite_events"][0]["favorited_status"]
+#     else:
+#         return make_response("thanks 😎", 200)
+#     if "extended_tweet" in tweet_json:
+#         tweet_json.update(tweet_json["extended_tweet"])
+#     await_in_another_thread(discord_webhook(tweet_json))
+#     VERBOSE and logging.info("Returning 200 to twitter.")
+#     return make_response("thanks 😎", 200)
 
 
-def create_embeds(tweet):
-    post_id = tweet.id
+def create_embeds(tweetParse):
+    tweet = tweetParse.tweet
+    tweet_id = tweet.id
     artist = tweet.user.handle
     pfp = tweet.user.pfp
+    twtr = tweetParse.twtr
 
     tweet_created_at = datetime.strptime(tweet.creation, "%a %b %d %H:%M:%S %Y").isoformat()
 
@@ -103,14 +111,14 @@ def create_embeds(tweet):
     if tweet.media.type == "image" or tweet.media.type == "images":
         for item in tweet.media.variants:
             embeds.append(
-                {"url": f"https://twitter.com/i/status/{post_id}", "image": {"url": item}}
+                {"url": f"https://twitter.com/i/status/{tweet_id}", "image": {"url": item}}
             )
     elif tweet.media.type == "video" or tweet.media.type == "gif":
         cover = tweet.media.cover
         video = tweet.media.variants[-1].split("?")[0]
         embeds.append(
             {
-                "url": f"https://twitter.com/i/status/{post_id}",
+                "url": f"https://twitter.com/i/status/{tweet_id}",
                 "image": {"url": cover},
                 "video": {"url": video},
             }
@@ -119,8 +127,8 @@ def create_embeds(tweet):
 
     embeds[0].update(
         {
-            "title": f"twitter@{artist}:{post_id}",
-            "url": f"https://twitter.com/i/status/{post_id}",
+            "title": f"twitter@{artist}:{tweet_id}",
+            "url": f"https://twitter.com/i/status/{tweet_id}",
             "color": COLOR_CYCLE(),
             "description": tweet_text,
             "timestamp": tweet_created_at,
@@ -136,17 +144,22 @@ def create_embeds(tweet):
         }
     )
 
-    return embeds
+    return {
+        "embeds": embeds,
+        "twtr": twtr,
+    }
 
 
 async def discord_webhook(tweet_json, check=True):
     VERBOSE and logging.info("")
-    VERBOSE and logging.info("New Tweet Liked By @wumbl3!")
+    VERBOSE and logging.info(f"New Tweet Liked!")
     VERBOSE and logging.info(f"tweet_json: {json.dumps(tweet_json)}")
+
     session = likes_database.create_session()
     database_entry = None
+
     try:
-        tweetParse = TweetParse(tweet_json)
+        tweetParse = TweetParse.TweetParse(tweet_json)
 
         tweet = tweetParse.tweet
 
@@ -154,30 +167,36 @@ async def discord_webhook(tweet_json, check=True):
             VERBOSE and logging.info("No media in tweet skipping...")
             return None
 
-        post_id = tweet.id
+        tweet_id = tweet.id
 
-        database_entry = Like(tweet_id=post_id)
+        database_entry = Like(tweet_id=tweet_id)
         database_entry.status = "Starting delay."
 
         if check:
-            sleep(TWEET_STILL_LIKED_CHECK_DELAY)
+            DELAY = HOT_CONFIG.get("TwitterLikeDelay", 0)
+            VERBOSE and logging.info(f"Checking if tweet is still liked... in {DELAY} seconds")
+            sleep(DELAY)
 
-            if post_id in SENT_TWEETS:
+            if tweet_id in SENT_TWEETS:
                 VERBOSE and logging.info("Tweet already processed skipping...")
                 return None
 
-            current_tweet_data = wumbl3_api_v1.get_status(post_id)
+            current_tweet_data = STWEET.getStweetJsonByID(tweet_id)
 
-            if current_tweet_data._json["favorited"] == False:
+            if current_tweet_data["favorited"] == False:
                 VERBOSE and logging.info("Tweet no longer liked skipping...")
-                database_entry.status = f"Tweet was unliked before the {TWEET_STILL_LIKED_CHECK_DELAY} second delay and was skipped."
+                database_entry.status = (
+                    f"Tweet was unliked before the {DELAY} second delay and was skipped."
+                )
                 return None
 
-            SENT_TWEETS.appendleft(post_id)
+            SENT_TWEETS.appendleft(tweet_id)
 
         database_entry.status = "Creating embeds."
 
-        embeds = create_embeds(tweet)
+        embeds = create_embeds(tweetParse)
+
+        twtr = embeds["twtr"]
 
         database_entry.status = "Embeds created."
 
@@ -191,8 +210,8 @@ async def discord_webhook(tweet_json, check=True):
 
         send = ioawait(
             channel.send(
-                content="New Tweet Liked By @wumbl3!",
-                embeds=[DiscordEmbed.from_dict(e) for e in embeds],
+                content=f"New Tweet Liked By twitter@{twtr}!",
+                embeds=[DiscordEmbed.from_dict(e) for e in embeds["embeds"]],
             )
         )
         results = send.result()
@@ -271,6 +290,7 @@ def check_sec_key(post_data):
 @app.route("/remove_like", methods=["POST"])
 def remove_like():
     try:
+        logging.info("remove_like")
         post_data = request.get_json()
 
         if key_check := check_sec_key(post_data):
@@ -286,11 +306,25 @@ def remove_like():
         logging.exception(e)
 
 
-from re import search
+# @app.route("/add_like", methods=["POST"])
+# def add_like():
+#     try:
+#         post_data = request.get_json()
+#         if key_check := check_sec_key(post_data):
+#             return key_check
+#         tweet_id = post_data.get("tweet_id", None)
+#         if not tweet_id:
+#             return make_response({"error": "No tweet_id provided."}, 200)
+#         if "twitter.com" in tweet_id:
+#             tweet_id = search(r"status/(\d+)", tweet_id).group(1)
+#         return make_response(add_like_by_id(tweet_id), 200)
+#     except Exception as e:
+#         logging.error("Exception in remove_like")
+#         logging.exception(e)
 
 
-@app.route("/add_like", methods=["POST"])
-def add_like():
+@app.route("/add_like_by_stweet", methods=["POST"])
+def add_like_by_stweet():
     try:
         post_data = request.get_json()
 
@@ -305,22 +339,35 @@ def add_like():
         if "twitter.com" in tweet_id:
             tweet_id = search(r"status/(\d+)", tweet_id).group(1)
 
-        return make_response(add_like_by_id(tweet_id), 200)
+        return make_response(add_like_by_stweet(tweet_id), 200)
     except Exception as e:
         logging.error("Exception in remove_like")
         logging.exception(e)
 
 
-def add_like_by_id(tweet_id):
+def add_like_by_stweet(tweet_id):
     try:
-        tweet_json = wumbl3_api_v1.get_status(tweet_id, tweet_mode="extended")
-        tweet_json = tweet_json._json
-        await_in_another_thread(discord_webhook(tweet_json, check=False))
+        stweet_json = STWEET.getStweetJsonByID(tweet_id)
+        if not stweet_json:
+            raise Exception("No stweet json found.")
+        await_in_another_thread(discord_webhook(stweet_json, check=True))
         return {"ok": "Tweet was sent to the discord channel. (maybe)"}
     except Exception as e:
         logging.error("Exception in add_like_by_id")
         logging.exception(e)
         return {"error": "Exception in add_like_by_id"}
+
+
+# def add_like_by_id(tweet_id):
+#     try:
+#         tweet_json = wumbl3_api_v1.get_status(tweet_id, tweet_mode="extended")
+#         tweet_json = tweet_json._json
+#         await_in_another_thread(discord_webhook(tweet_json, check=False))
+#         return {"ok": "Tweet was sent to the discord channel. (maybe)"}
+#     except Exception as e:
+#         logging.error("Exception in add_like_by_id")
+#         logging.exception(e)
+#         return {"error": "Exception in add_like_by_id"}
 
 
 def ioawait(coroutine):
@@ -343,32 +390,33 @@ def safelyAddToDatabase(session, database_entry):
 def twitter_pfp(pfp):
     return (
         "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png"
-        if pfp is "default"
+        if pfp == "default"
         else f"https://pbs.twimg.com/profile_images/{pfp}"
     )
 
 
-# Defines a route for the GET request
-@app.route("/webhooks/twitter", methods=["GET"])
-async def webhook_challenge():
-    try:
-        consumer_secret = os.environ["consumer_secret"].encode("utf-8")
-        crc_token = request.args.get("crc_token").encode("utf-8")
+# # Defines a route for the GET request
+# @app.route("/webhooks/twitter", methods=["GET"])
+# async def webhook_challenge():
+#     try:
+#         logging.info("webhook challenge")
+#         consumer_secret = os.environ["consumer_secret"].encode("utf-8")
+#         crc_token = request.args.get("crc_token").encode("utf-8")
 
-        sha256_hash_digest = hmac.new(
-            consumer_secret, msg=crc_token, digestmod=hashlib.sha256
-        ).digest()
-        # construct response data with base64 encoded hash
-        response = {
-            "response_token": "sha256=" + base64.b64encode(sha256_hash_digest).decode("utf-8")
-        }
-        logging.info("Webhook challenge response: ")
-        logging.info(response)
-        # returns properly formatted json response
-        return json.dumps(response)
-    except Exception as e:
-        logging.error("Error in webhook_challenge")
-        logging.exception(e)
+#         sha256_hash_digest = hmac.new(
+#             consumer_secret, msg=crc_token, digestmod=hashlib.sha256
+#         ).digest()
+#         # construct response data with base64 encoded hash
+#         response = {
+#             "response_token": "sha256=" + base64.b64encode(sha256_hash_digest).decode("utf-8")
+#         }
+#         logging.info("Webhook challenge response: ")
+#         logging.info(response)
+#         # returns properly formatted json response
+#         return json.dumps(response)
+#     except Exception as e:
+#         logging.error("Error in webhook_challenge")
+#         logging.exception(e)
 
 
-logging.info("Twitter webhook started!")
+# logging.info("Twitter webhook started!")

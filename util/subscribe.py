@@ -41,6 +41,6 @@ def list_webhooks():
     print(webhooks)
 
 
-# unsub()
+unsub()
 # list_webhooks()
-subscribe_to_twitter_webhook()
+# subscribe_to_twitter_webhook()
